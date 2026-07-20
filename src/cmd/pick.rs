@@ -96,8 +96,7 @@ impl PickArgs {
         match r {
             Ok(q) => {
                 let rendered = q.desc_with_images();
-                println!("{}", rendered.text);
-                crate::helper::print_images(&rendered.images);
+                crate::helper::print_desc_with_images(&rendered.text, &rendered.images);
             }
             Err(e) => {
                 eprintln!("{:?}", e);

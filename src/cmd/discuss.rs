@@ -68,8 +68,7 @@ impl DiscussArgs {
         );
 
         let rendered = crate::helper::render_markdown(content);
-        println!("{}", rendered.text);
-        crate::helper::print_images(&rendered.images);
+        crate::helper::print_desc_with_images(&rendered.text, &rendered.images);
 
         // Always print the canonical link at the end.
         let base = crate::config::Config::locate()
