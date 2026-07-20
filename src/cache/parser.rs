@@ -54,12 +54,19 @@ pub fn desc(q: &mut Question, v: Value) -> Option<bool> {
         .get("question")?
         .as_object()?;
 
-    if *o.get("content")? == Value::Null {
+    let content = o.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    let t_content = o
+        .get("translatedContent")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    // Premium / locked: neither English nor translated body is available.
+    if content.is_empty() && t_content.is_empty() {
         return Some(false);
     }
 
     *q = Question {
-        content: o.get("content")?.as_str().unwrap_or("").to_string(),
+        content: content.to_string(),
         stats: serde_json::from_str(o.get("stats")?.as_str()?).ok()?,
         defs: serde_json::from_str(o.get("codeDefinition")?.as_str()?).ok()?,
         case: o.get("sampleTestCase")?.as_str()?.to_string(),
@@ -70,11 +77,7 @@ pub fn desc(q: &mut Question, v: Value) -> Option<bool> {
             .to_string(),
         metadata: serde_json::from_str(o.get("metaData")?.as_str()?).ok()?,
         test: o.get("enableRunCode")?.as_bool()?,
-        t_content: o
-            .get("translatedContent")?
-            .as_str()
-            .unwrap_or("")
-            .to_string(),
+        t_content: t_content.to_string(),
     };
 
     Some(true)

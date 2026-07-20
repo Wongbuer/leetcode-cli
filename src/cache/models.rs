@@ -161,12 +161,21 @@ pub struct Question {
 }
 
 impl Question {
+    /// Prefer translated (Chinese on leetcode.cn) content when present.
+    fn display_content(&self) -> &str {
+        if !self.t_content.trim().is_empty() {
+            &self.t_content
+        } else {
+            &self.content
+        }
+    }
+
     pub fn desc(&self) -> String {
-        self.content.render()
+        self.display_content().to_string().render()
     }
 
     pub fn desc_comment(&self, conf: &Config) -> String {
-        let desc = self.content.render();
+        let desc = self.display_content().to_string().render();
 
         let mut res = desc.lines().fold("\n".to_string(), |acc, e| {
             acc + "" + conf.code.comment_leading.as_str() + " " + e + "\n"
