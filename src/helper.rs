@@ -153,9 +153,9 @@ mod html {
         }
 
         fn render_with_images(&self) -> RenderedDesc {
-            // Collect <img src="..."> in document order (deduped).
+            // Match a full <img ...> / <img .../> tag and capture src in any attribute order.
             let img_re = regex::Regex::new(
-                r#"(?i)<img\b[^>]*?\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))"#,
+                r#"(?is)<img\b[^>]*?\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))[^>]*/?>"#,
             )
             .unwrap();
             let mut images = Vec::new();
@@ -172,7 +172,7 @@ mod html {
                 }
             }
 
-            // Replace each img tag with a text placeholder before stripping tags.
+            // Replace each full img tag with a text placeholder before stripping tags.
             let mut idx = 0usize;
             let mut seen2 = std::collections::HashSet::new();
             let with_placeholders = img_re.replace_all(self, |cap: &Captures| {
