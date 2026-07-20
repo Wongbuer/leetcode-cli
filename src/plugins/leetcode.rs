@@ -315,6 +315,159 @@ impl LeetCode {
         .send(&self.client)
         .await
     }
+
+    /// List solution articles for a problem (leetcode.cn `questionSolutionArticles`).
+    ///
+    /// `tag_slugs` filters by language/topic tags, e.g. `["java"]`.
+    /// `order_by` accepts `"HOT"` or `"DEFAULT"`.
+    pub async fn list_solution_articles(
+        self,
+        question_slug: &str,
+        skip: i32,
+        first: i32,
+        order_by: &str,
+        tag_slugs: &[String],
+    ) -> Result<Response> {
+        trace!(
+            "Listing solutions for {} (skip={}, first={}, tags={:?})...",
+            question_slug,
+            skip,
+            first,
+            tag_slugs
+        );
+        let refer = format!(
+            "{}/problems/{}/solutions/",
+            self.conf.sys.urls.base.trim_end_matches('/'),
+            question_slug
+        );
+        let tags_json = serde_json::to_string(tag_slugs).unwrap_or_else(|_| "[]".into());
+        let mut json: Json = HashMap::new();
+        json.insert(
+            "query",
+            [
+                "query questionSolutionArticles(",
+                "  $questionSlug: String!,",
+                "  $skip: Int,",
+                "  $first: Int,",
+                "  $orderBy: SolutionArticleOrderBy,",
+                "  $userInput: String,",
+                "  $tagSlugs: [String!]",
+                ") {",
+                "  questionSolutionArticles(",
+                "    questionSlug: $questionSlug,",
+                "    skip: $skip,",
+                "    first: $first,",
+                "    orderBy: $orderBy,",
+                "    userInput: $userInput,",
+                "    tagSlugs: $tagSlugs",
+                "  ) {",
+                "    totalNum",
+                "    edges {",
+                "      node {",
+                "        uuid",
+                "        title",
+                "        slug",
+                "        identifier",
+                "        byLeetcode",
+                "        hitCount",
+                "        hasVideo",
+                "        author {",
+                "          username",
+                "          profile { realName userSlug }",
+                "        }",
+                "        tags { name slug tagType }",
+                "        topic { viewCount commentCount }",
+                "        reactionsV2 { count reactionType }",
+                "      }",
+                "    }",
+                "  }",
+                "}",
+            ]
+            .join("\n"),
+        );
+        json.insert(
+            "variables",
+            format!(
+                r#"{{"questionSlug":"{}","skip":{},"first":{},"orderBy":"{}","userInput":"","tagSlugs":{}}}"#,
+                question_slug.replace('"', ""),
+                skip,
+                first,
+                order_by.replace('"', ""),
+                tags_json
+            ),
+        );
+        json.insert("operationName", "questionSolutionArticles".to_string());
+
+        Req {
+            default_headers: self.default_headers,
+            refer: Some(refer),
+            info: false,
+            json: Some(json),
+            mode: Mode::Post,
+            name: "list_solution_articles",
+            url: self.conf.sys.urls.graphql,
+        }
+        .send(&self.client)
+        .await
+    }
+
+    /// Fetch a solution article by slug (the trailing part of `/solutions/<id>/<slug>/`).
+    pub async fn get_solution_article(self, slug: &str) -> Result<Response> {
+        trace!("Requesting solution article {}...", slug);
+        let refer = format!(
+            "{}/problems/placeholder/solutions/0/{}/",
+            self.conf.sys.urls.base.trim_end_matches('/'),
+            slug
+        );
+        let mut json: Json = HashMap::new();
+        json.insert(
+            "query",
+            [
+                "query solutionDetailArticle($slug: String!, $orderBy: SolutionArticleOrderBy!) {",
+                "  solutionArticle(slug: $slug, orderBy: $orderBy) {",
+                "    uuid",
+                "    title",
+                "    slug",
+                "    identifier",
+                "    content",
+                "    summary",
+                "    byLeetcode",
+                "    hitCount",
+                "    hasVideo",
+                "    createdAt",
+                "    author {",
+                "      username",
+                "      profile { realName userSlug }",
+                "    }",
+                "    tags { name slug tagType }",
+                "    topic { id viewCount commentCount }",
+                "    question { questionTitleSlug }",
+                "  }",
+                "}",
+            ]
+            .join("\n"),
+        );
+        json.insert(
+            "variables",
+            format!(
+                r#"{{"slug":"{}","orderBy":"DEFAULT"}}"#,
+                slug.replace('"', "")
+            ),
+        );
+        json.insert("operationName", "solutionDetailArticle".to_string());
+
+        Req {
+            default_headers: self.default_headers,
+            refer: Some(refer),
+            info: false,
+            json: Some(json),
+            mode: Mode::Post,
+            name: "get_solution_article",
+            url: self.conf.sys.urls.graphql,
+        }
+        .send(&self.client)
+        .await
+    }
 }
 
 /// Sub-module for leetcode, simplify requests
