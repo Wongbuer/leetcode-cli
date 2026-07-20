@@ -34,6 +34,7 @@ anyhow = "1.0.102"
 clap_complete = "4.6"
 thiserror = "2.0.18"
 unicode-width = "0.2"
+base64 = "0.22"
 notify = "8.2.0"
 aes = "0.8"
 cbc = { version = "0.1", features = ["alloc", "block-padding"] }
@@ -47,7 +48,7 @@ features = ["sqlite"]
 [dependencies.reqwest]
 version = "0.13.4"
 default-features = false
-features = ["gzip", "json", "native-tls"]
+features = ["gzip", "json", "native-tls", "blocking"]
 
 [features]
 pym = ["pyo3"]

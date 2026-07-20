@@ -3,7 +3,8 @@ pub use self::{
     digit::Digit,
     file::{code_path, load_script, test_cases_path},
     filter::{filter, squash},
-    html::HTML,
+    html::{HTML, RenderedDesc},
+    image::{print_images, supports_inline_images},
 };
 
 /// Convert i32 to specific digits string.
@@ -133,30 +134,239 @@ mod html {
     use regex::Captures;
     use scraper::Html;
 
+    /// Text + ordered image URLs extracted from a problem statement.
+    #[derive(Debug, Default, Clone)]
+    pub struct RenderedDesc {
+        pub text: String,
+        pub images: Vec<String>,
+    }
+
     /// Html render plugin
     pub trait HTML {
         fn render(&self) -> String;
+        fn render_with_images(&self) -> RenderedDesc;
     }
 
     impl HTML for String {
         fn render(&self) -> String {
+            self.render_with_images().text
+        }
+
+        fn render_with_images(&self) -> RenderedDesc {
+            // Collect <img src="..."> in document order (deduped).
+            let img_re = regex::Regex::new(
+                r#"(?i)<img\b[^>]*?\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))"#,
+            )
+            .unwrap();
+            let mut images = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for cap in img_re.captures_iter(self) {
+                let src = cap
+                    .get(1)
+                    .or_else(|| cap.get(2))
+                    .or_else(|| cap.get(3))
+                    .map(|m| m.as_str().trim())
+                    .unwrap_or("");
+                if !src.is_empty() && seen.insert(src.to_string()) {
+                    images.push(src.to_string());
+                }
+            }
+
+            // Replace each img tag with a text placeholder before stripping tags.
+            let mut idx = 0usize;
+            let mut seen2 = std::collections::HashSet::new();
+            let with_placeholders = img_re.replace_all(self, |cap: &Captures| {
+                let src = cap
+                    .get(1)
+                    .or_else(|| cap.get(2))
+                    .or_else(|| cap.get(3))
+                    .map(|m| m.as_str().trim())
+                    .unwrap_or("");
+                if src.is_empty() || !seen2.insert(src.to_string()) {
+                    return String::new();
+                }
+                idx += 1;
+                format!("\n[图片 {idx}]\n")
+            });
+
             let sup_re = regex::Regex::new(r"<sup>(?P<num>[0-9]*)</sup>").unwrap();
             let sub_re = regex::Regex::new(r"<sub>(?P<num>[0-9]*)</sub>").unwrap();
 
-            let res = sup_re.replace_all(self, |cap: &Captures| {
-                let num: u8 = cap["num"].to_string().parse().unwrap();
+            let res = sup_re.replace_all(&with_placeholders, |cap: &Captures| {
+                let num: u8 = cap["num"].to_string().parse().unwrap_or(0);
                 superscript(num)
             });
 
             let res = sub_re.replace_all(&res, |cap: &Captures| {
-                let num: u8 = cap["num"].to_string().parse().unwrap();
+                let num: u8 = cap["num"].to_string().parse().unwrap_or(0);
                 subscript(num)
             });
 
             let frag = Html::parse_fragment(&res);
-            frag.root_element()
+            let text = frag
+                .root_element()
                 .text()
-                .fold(String::new(), |acc, e| acc + e)
+                .fold(String::new(), |acc, e| acc + e);
+
+            RenderedDesc { text, images }
+        }
+    }
+}
+
+/// Inline terminal images (Kitty graphics protocol) with URL fallback.
+mod image {
+    use base64::{Engine, engine::general_purpose::STANDARD as B64};
+    use std::io::{IsTerminal, Write};
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    /// Ghostty / Kitty (and a few others) understand the Kitty graphics protocol.
+    pub fn supports_inline_images() -> bool {
+        if !std::io::stdout().is_terminal() {
+            return false;
+        }
+        // Explicit opt-out.
+        if std::env::var_os("LEETCODE_NO_IMAGES").is_some() {
+            return false;
+        }
+        // Explicit opt-in for odd TERM values.
+        if std::env::var_os("LEETCODE_FORCE_IMAGES").is_some() {
+            return true;
+        }
+
+        let term = std::env::var("TERM").unwrap_or_default().to_lowercase();
+        let program = std::env::var("TERM_PROGRAM").unwrap_or_default().to_lowercase();
+
+        if program.contains("ghostty")
+            || program.contains("kitty")
+            || program.contains("wezterm")
+            || program.contains("konsole")
+        {
+            return true;
+        }
+        if !std::env::var("KITTY_WINDOW_ID").unwrap_or_default().is_empty()
+            || !std::env::var("WEZTERM_EXECUTABLE")
+                .unwrap_or_default()
+                .is_empty()
+            || !std::env::var("GHOSTTY_RESOURCES_DIR")
+                .unwrap_or_default()
+                .is_empty()
+        {
+            return true;
+        }
+        // TERM hints (e.g. xterm-ghostty, xterm-kitty).
+        term.contains("kitty") || term.contains("ghostty") || term.contains("wezterm")
+    }
+
+    fn cache_dir() -> Option<PathBuf> {
+        let home = dirs::home_dir()?;
+        let dir = home.join(".leetcode").join("images");
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir)
+    }
+
+    fn cache_path_for(url: &str) -> Option<PathBuf> {
+        let dir = cache_dir()?;
+        let digest = {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut h = DefaultHasher::new();
+            url.hash(&mut h);
+            format!("{:016x}", h.finish())
+        };
+        let ext = url
+            .rsplit('.')
+            .next()
+            .and_then(|e| {
+                let e = e.split('?').next().unwrap_or(e).to_lowercase();
+                match e.as_str() {
+                    "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" => Some(e),
+                    _ => None,
+                }
+            })
+            .unwrap_or_else(|| "img".into());
+        Some(dir.join(format!("{digest}.{ext}")))
+    }
+
+    fn fetch_bytes(url: &str) -> Option<Vec<u8>> {
+        if let Some(path) = cache_path_for(url) {
+            if path.exists() {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    if !bytes.is_empty() {
+                        return Some(bytes);
+                    }
+                }
+            }
+        }
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .user_agent("leetcode-cli")
+            .build()
+            .ok()?;
+        let bytes = client
+            .get(url)
+            .send()
+            .ok()?
+            .error_for_status()
+            .ok()?
+            .bytes()
+            .ok()?;
+        let bytes = bytes.to_vec();
+        if let Some(path) = cache_path_for(url) {
+            let _ = std::fs::write(path, &bytes);
+        }
+        Some(bytes)
+    }
+
+    /// Emit one image via the Kitty graphics protocol.
+    fn print_kitty_image(bytes: &[u8], id: u32) -> bool {
+        let mut out = std::io::stdout().lock();
+        // f=100: payload is raw encoded file bytes (png/jpeg/…); terminal decodes.
+        let encoded = B64.encode(bytes);
+        let chunks: Vec<&[u8]> = encoded.as_bytes().chunks(4096).collect();
+        if chunks.is_empty() {
+            return false;
+        }
+        for (i, chunk) in chunks.iter().enumerate() {
+            let first = i == 0;
+            let last = i + 1 == chunks.len();
+            let m = if last { 0 } else { 1 };
+            let piece = std::str::from_utf8(chunk).unwrap_or("");
+            if first {
+                // a=T transmit+display, q=2 quiet
+                let _ = write!(
+                    out,
+                    "\x1b_Ga=T,f=100,q=2,m={m},i={id};{piece}\x1b\\"
+                );
+            } else {
+                let _ = write!(out, "\x1b_Gm={m};{piece}\x1b\\");
+            }
+        }
+        let _ = writeln!(out);
+        let _ = out.flush();
+        true
+    }
+
+    /// Print images for a problem description.
+    ///
+    /// - Terminals with Kitty graphics support: inline true image + URL
+    /// - Otherwise: URL only (no ASCII/block approximation)
+    pub fn print_images(images: &[String]) {
+        if images.is_empty() {
+            return;
+        }
+
+        let inline = supports_inline_images();
+        println!();
+        for (i, url) in images.iter().enumerate() {
+            let n = i + 1;
+            println!("[图片 {n}] {url}");
+            if inline {
+                if let Some(bytes) = fetch_bytes(url) {
+                    let _ = print_kitty_image(&bytes, (n as u32) + 1000);
+                }
+            }
         }
     }
 }

@@ -174,6 +174,11 @@ impl Question {
         self.display_content().to_string().render()
     }
 
+    /// Text + image URLs for terminal display.
+    pub fn desc_with_images(&self) -> crate::helper::RenderedDesc {
+        self.display_content().to_string().render_with_images()
+    }
+
     pub fn desc_comment(&self, conf: &Config) -> String {
         let desc = self.display_content().to_string().render();
 

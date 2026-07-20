@@ -94,7 +94,11 @@ impl PickArgs {
         let r = cache.get_question(fid).await;
 
         match r {
-            Ok(q) => println!("{}", q.desc()),
+            Ok(q) => {
+                let rendered = q.desc_with_images();
+                println!("{}", rendered.text);
+                crate::helper::print_images(&rendered.images);
+            }
             Err(e) => {
                 eprintln!("{:?}", e);
                 if let Error::Reqwest(_) = e {
