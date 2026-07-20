@@ -192,7 +192,15 @@ mod file {
     /// Generate test cases path by fid
     pub fn test_cases_path(problem: &Problem) -> crate::Result<String> {
         let conf = crate::config::Config::locate()?;
-        let mut path = format!("{}/{}.tests.dat", conf.storage.code()?, conf.code.pick);
+        // Use the basename of `pick` only — if the code template nests with `/`,
+        // keep all *.tests.dat files flat under storage.tests.
+        let pick_base = conf
+            .code
+            .pick
+            .rsplit('/')
+            .next()
+            .unwrap_or(&conf.code.pick);
+        let mut path = format!("{}/{}.tests.dat", conf.storage.tests()?, pick_base);
 
         path = path.replace("${fid}", &problem.fid.to_string());
         path = path.replace("${slug}", &problem.slug.to_string());
