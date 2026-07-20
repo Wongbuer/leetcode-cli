@@ -17,6 +17,14 @@ fn is_default_bool(t: &bool) -> bool {
     !t
 }
 
+fn default_max_saved_cases() -> usize {
+    10
+}
+
+fn is_default_max_saved_cases(n: &usize) -> bool {
+    *n == 10
+}
+
 /// Code config
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Code {
@@ -42,6 +50,17 @@ pub struct Code {
     pub comment_leading: String,
     #[serde(default, skip_serializing_if = "is_default_bool")]
     pub test: bool,
+    /// When true, append the failing submit case into the local `.tests.dat`
+    /// so the next `leetcode test` reuses it. Duplicates are skipped.
+    #[serde(default, skip_serializing_if = "is_default_bool")]
+    pub save_failed_cases: bool,
+    /// Max number of cases kept in `.tests.dat` when `save_failed_cases` is on.
+    /// Oldest cases are dropped when the limit is exceeded.
+    #[serde(
+        default = "default_max_saved_cases",
+        skip_serializing_if = "is_default_max_saved_cases"
+    )]
+    pub max_saved_cases: usize,
     pub lang: String,
     #[serde(default = "default_pick", skip_serializing_if = "is_default_pick")]
     pub pick: String,
@@ -61,6 +80,8 @@ impl Default for Code {
             comment_problem_desc: false,
             comment_leading: "".into(),
             test: true,
+            save_failed_cases: false,
+            max_saved_cases: 10,
             lang: "rust".into(),
             pick: "${fid}.${slug}".into(),
         }

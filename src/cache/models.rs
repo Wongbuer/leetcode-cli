@@ -321,6 +321,26 @@ pub struct VerifyResult {
     submit: Submit,
 }
 
+impl VerifyResult {
+    /// Failing input from a submit Wrong Answer (status 11), if any.
+    /// Multi-parameter cases use `\n` between arguments (LeetCode format).
+    pub fn failed_submit_case(&self) -> Option<&str> {
+        if !matches!(self.result_type, Run::Submit) {
+            return None;
+        }
+        // 11 = Wrong Answer on submission
+        if self.status.status_code != 11 {
+            return None;
+        }
+        let t = self.submit.last_testcase.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
+    }
+}
+
 impl std::fmt::Display for VerifyResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let ca = match &self.code_answer.len() {

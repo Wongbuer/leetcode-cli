@@ -1,7 +1,9 @@
 //! A set of helper traits
 pub use self::{
     digit::Digit,
-    file::{code_path, load_script, test_cases_path},
+    file::{
+        append_failed_case, code_path, load_script, test_cases_path,
+    },
     filter::{filter, squash},
     html::{HTML, RenderedDesc},
     image::{print_desc_with_images, print_images, render_markdown, supports_inline_images},
@@ -761,6 +763,126 @@ mod file {
         path = path.replace("${fid}", &problem.fid.to_string());
         path = path.replace("${slug}", &problem.slug.to_string());
         Ok(path)
+    }
+
+    /// Append a failed submit case into the problem's `.tests.dat`.
+    ///
+    /// - Skips if the same case (normalized) already exists
+    /// - Keeps at most `max_cases` cases (drops oldest)
+    /// - Returns `Ok(true)` when a new case was written
+    pub fn append_failed_case(
+        problem: &Problem,
+        case: &str,
+        max_cases: usize,
+    ) -> crate::Result<bool> {
+        use std::fs;
+        use std::io::Write;
+
+        let path = test_cases_path(problem)?;
+        let case = case.trim();
+        if case.is_empty() {
+            return Ok(false);
+        }
+
+        // Normalize: strip trailing blank lines, unify newlines.
+        let case = case
+            .replace("\r\n", "\n")
+            .trim_end_matches('\n')
+            .to_string();
+
+        let existing = fs::read_to_string(&path).unwrap_or_default();
+        let existing = existing.replace("\r\n", "\n");
+
+        // Split into cases. A case is a block of lines; we don't know param
+        // count here, so treat each contiguous non-empty block separated by
+        // a blank line as one case. If the file has no blank lines (the
+        // default leetcode-cli format: params concatenated back-to-back),
+        // fall back to "whole file is N-param groups" only when the new
+        // case itself contains newlines — otherwise compare as whole blocks
+        // by scanning for an exact line-sequence match.
+        if case_already_present(&existing, &case) {
+            return Ok(false);
+        }
+
+        // Parse existing into cases using the new case's line-count as the
+        // group size when possible (last_testcase has one line per param).
+        let param_lines = case.lines().count().max(1);
+        let mut cases = split_cases(&existing, param_lines);
+        cases.push(case);
+        if max_cases > 0 && cases.len() > max_cases {
+            let drop_n = cases.len() - max_cases;
+            cases.drain(0..drop_n);
+        }
+
+        let mut out = cases.join("\n");
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+
+        if let Some(parent) = std::path::Path::new(&path).parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut f = fs::File::create(&path)?;
+        f.write_all(out.as_bytes())?;
+        Ok(true)
+    }
+
+    fn normalize_case(s: &str) -> String {
+        s.replace("\r\n", "\n").trim().to_string()
+    }
+
+    fn case_already_present(file: &str, case: &str) -> bool {
+        let case = normalize_case(case);
+        if case.is_empty() {
+            return true;
+        }
+        let file = normalize_case(file);
+        if file.is_empty() {
+            return false;
+        }
+        // Exact whole-file match
+        if file == case {
+            return true;
+        }
+        // Case appears as a contiguous line block somewhere in the file.
+        let case_lines: Vec<&str> = case.lines().collect();
+        let file_lines: Vec<&str> = file.lines().collect();
+        if case_lines.is_empty() || file_lines.len() < case_lines.len() {
+            return false;
+        }
+        'outer: for i in 0..=(file_lines.len() - case_lines.len()) {
+            for (j, cl) in case_lines.iter().enumerate() {
+                if file_lines[i + j].trim() != cl.trim() {
+                    continue 'outer;
+                }
+            }
+            // Prefer boundary-aligned matches (start, or previous line empty,
+            // or group-aligned). Accept any contiguous match to be safe.
+            return true;
+        }
+        false
+    }
+
+    fn split_cases(file: &str, param_lines: usize) -> Vec<String> {
+        let file = file.replace("\r\n", "\n");
+        let lines: Vec<&str> = file
+            .lines()
+            .map(|l| l.trim_end())
+            .filter(|l| !l.is_empty()) // drop blank separators if any
+            .collect();
+        if lines.is_empty() {
+            return Vec::new();
+        }
+        let n = param_lines.max(1);
+        // If total lines isn't a multiple of n, keep as one blob to avoid
+        // mangling hand-edited files; append will still dedupe by content.
+        if lines.len() % n != 0 {
+            return vec![lines.join("\n")];
+        }
+        lines
+            .chunks(n)
+            .map(|c| c.join("\n"))
+            .collect()
     }
 
     /// Generate code path by fid
