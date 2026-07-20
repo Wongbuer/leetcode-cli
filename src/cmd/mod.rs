@@ -15,6 +15,7 @@
 
 mod completions;
 mod data;
+mod discuss;
 mod edit;
 mod exec;
 mod list;
@@ -24,6 +25,7 @@ mod test;
 
 pub use completions::CompletionsArgs;
 pub use data::DataArgs;
+pub use discuss::DiscussArgs;
 pub use edit::EditArgs;
 pub use exec::ExecArgs;
 pub use list::ListArgs;

@@ -156,21 +156,24 @@ impl Cache {
             _ => target.fid.to_string().dimmed(),
         };
 
-        println!(
-            "\n[{}] {} {}\n\n",
-            &ids,
-            &target.name.bold().underline(),
-            "is on the run...".dimmed()
-        );
-
         if target.category != "algorithms" {
             return Err(anyhow!("No support for database and shell questions yet").into());
         }
 
         let mut rdesc = Question::default();
-        if !target.desc.is_empty() {
+        let mut need_fetch = target.desc.is_empty();
+        if !need_fetch {
             rdesc = serde_json::from_str(&target.desc)?;
-        } else {
+            // Old cache entries predate translatedTitle — refresh once.
+            if rdesc.t_title.trim().is_empty() && rdesc.t_content.trim().is_empty() == false {
+                // has chinese body but no title field yet
+                need_fetch = true;
+            } else if rdesc.t_title.trim().is_empty() && rdesc.title.trim().is_empty() {
+                need_fetch = true;
+            }
+        }
+
+        if need_fetch {
             let json: Value = self
                 .0
                 .clone()
@@ -197,6 +200,14 @@ impl Cache {
                 .set(desc.eq(sdesc))
                 .execute(&mut self.conn()?)?;
         }
+
+        let title = rdesc.display_title(&target.name);
+        println!(
+            "\n[{}] {} {}\n\n",
+            &ids,
+            &title.bold().underline(),
+            "is on the run...".dimmed()
+        );
 
         Ok(rdesc)
     }
@@ -301,6 +312,17 @@ impl Cache {
             }
         } else {
             code
+        };
+
+        // Local Java files may nest `static class Solution` inside `public class NoX`
+        // so the file is a valid single-public-class unit. LeetCode expects a top-level
+        // `class Solution`, so strip the nested-static modifier before upload.
+        let code = {
+            let mut c = code;
+            // common patterns produced by our generator / user edits
+            c = c.replace("static class Solution", "class Solution");
+            c = c.replace("static class solution", "class solution");
+            c
         };
 
         json.insert("lang", conf.code.lang.to_string());

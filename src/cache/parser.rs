@@ -78,6 +78,16 @@ pub fn desc(q: &mut Question, v: Value) -> Option<bool> {
         metadata: serde_json::from_str(o.get("metaData")?.as_str()?).ok()?,
         test: o.get("enableRunCode")?.as_bool()?,
         t_content: t_content.to_string(),
+        t_title: o
+            .get("translatedTitle")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        title: o
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
     };
 
     Some(true)

@@ -1,6 +1,9 @@
 //! Clap Commanders
 use crate::{
-    cmd::{CompletionsArgs, DataArgs, EditArgs, ExecArgs, ListArgs, PickArgs, StatArgs, TestArgs},
+    cmd::{
+        CompletionsArgs, DataArgs, DiscussArgs, EditArgs, ExecArgs, ListArgs, PickArgs, StatArgs,
+        TestArgs,
+    },
     err::Error,
 };
 use clap::{CommandFactory, Parser, Subcommand};
@@ -63,8 +66,12 @@ pub enum Commands {
     #[command(visible_alias = "t", display_order = 7)]
     Test(TestArgs),
 
+    /// Show a discuss post
+    #[command(visible_alias = "di", display_order = 8)]
+    Discuss(DiscussArgs),
+
     /// Generate shell Completions
-    #[command(visible_alias = "c", display_order = 8)]
+    #[command(visible_alias = "c", display_order = 9)]
     Completions(CompletionsArgs),
 }
 
@@ -91,6 +98,7 @@ pub async fn main() -> Result<(), Error> {
         Some(Commands::Pick(args)) => args.run().await,
         Some(Commands::Stat(args)) => args.run().await,
         Some(Commands::Test(args)) => args.run().await,
+        Some(Commands::Discuss(args)) => args.run().await,
         Some(Commands::Completions(args)) => {
             let mut cmd = Cli::command();
             args.run(&mut cmd)

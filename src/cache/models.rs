@@ -158,6 +158,12 @@ pub struct Question {
     pub metadata: MetaData,
     pub test: bool,
     pub t_content: String,
+    /// Translated title (Chinese on leetcode.cn). Empty if unavailable.
+    #[serde(default)]
+    pub t_title: String,
+    /// Original English title from detail API.
+    #[serde(default)]
+    pub title: String,
 }
 
 impl Question {
@@ -167,6 +173,17 @@ impl Question {
             &self.t_content
         } else {
             &self.content
+        }
+    }
+
+    /// Prefer Chinese title when present.
+    pub fn display_title<'a>(&'a self, fallback: &'a str) -> &'a str {
+        if !self.t_title.trim().is_empty() {
+            &self.t_title
+        } else if !self.title.trim().is_empty() {
+            &self.title
+        } else {
+            fallback
         }
     }
 

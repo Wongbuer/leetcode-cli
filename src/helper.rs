@@ -4,7 +4,7 @@ pub use self::{
     file::{code_path, load_script, test_cases_path},
     filter::{filter, squash},
     html::{HTML, RenderedDesc},
-    image::{print_images, supports_inline_images},
+    image::{print_images, render_markdown, supports_inline_images},
 };
 
 /// Convert i32 to specific digits string.
@@ -319,11 +319,28 @@ mod image {
         Some(bytes)
     }
 
+    /// Kitty graphics protocol reliably decodes PNG (`f=100`). Convert other
+    /// formats (JPEG/WebP/GIF) to PNG first so Ghostty/Kitty actually show the image.
+    fn to_png_bytes(bytes: &[u8]) -> Option<Vec<u8>> {
+        // Already PNG — send as-is.
+        if bytes.starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']) {
+            return Some(bytes.to_vec());
+        }
+        let img = image::load_from_memory(bytes).ok()?;
+        let mut out = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut out);
+        img.write_to(&mut cursor, image::ImageFormat::Png).ok()?;
+        Some(out)
+    }
+
     /// Emit one image via the Kitty graphics protocol.
     fn print_kitty_image(bytes: &[u8], id: u32) -> bool {
+        let Some(png) = to_png_bytes(bytes) else {
+            return false;
+        };
         let mut out = std::io::stdout().lock();
-        // f=100: payload is raw encoded file bytes (png/jpeg/…); terminal decodes.
-        let encoded = B64.encode(bytes);
+        // f=100: payload is raw PNG file bytes; terminal decodes.
+        let encoded = B64.encode(&png);
         let chunks: Vec<&[u8]> = encoded.as_bytes().chunks(4096).collect();
         if chunks.is_empty() {
             return false;
@@ -364,10 +381,64 @@ mod image {
             println!("[图片 {n}] {url}");
             if inline {
                 if let Some(bytes) = fetch_bytes(url) {
-                    let _ = print_kitty_image(&bytes, (n as u32) + 1000);
+                    if !print_kitty_image(&bytes, (n as u32) + 1000) {
+                        // keep URL line already printed; silent if decode fails
+                    }
                 }
             }
         }
+    }
+
+    /// Render a markdown discuss post: text + image urls (from `![](url)`).
+    pub fn render_markdown(md: &str) -> super::html::RenderedDesc {
+        let img_re = regex::Regex::new(r#"!\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)"#).unwrap();
+        let mut images = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for cap in img_re.captures_iter(md) {
+            let src = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+            // strip optional leetcode {:width=...} suffix artifacts if any
+            let src = src.split('{').next().unwrap_or(src).trim();
+            if !src.is_empty() && seen.insert(src.to_string()) {
+                images.push(src.to_string());
+            }
+        }
+
+        let mut idx = 0usize;
+        let mut seen2 = std::collections::HashSet::new();
+        let with_ph = img_re.replace_all(md, |cap: &regex::Captures| {
+            let src = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+            let src = src.split('{').next().unwrap_or(src).trim();
+            if src.is_empty() || !seen2.insert(src.to_string()) {
+                return String::new();
+            }
+            idx += 1;
+            format!("\n[图片 {idx}]\n")
+        });
+
+        // Light markdown cleanup for terminal readability.
+        let mut text = with_ph.to_string();
+        // strip {:width=N} artifacts that follow images in leetcode md
+        let artifact = regex::Regex::new(r"\{:[^}]*\}").unwrap();
+        text = artifact.replace_all(&text, "").to_string();
+        // links [text](url) -> text (url)
+        let link_re = regex::Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").unwrap();
+        text = link_re
+            .replace_all(&text, |c: &regex::Captures| {
+                format!("{} ({})", &c[1], &c[2])
+            })
+            .to_string();
+        // bold/italic markers
+        for pat in ["**", "__", "*", "_", "~~", "`"] {
+            text = text.replace(pat, "");
+        }
+        // headings
+        let heading = regex::Regex::new(r"(?m)^#{1,6}\s*").unwrap();
+        text = heading.replace_all(&text, "").to_string();
+        // blockquote
+        let bq = regex::Regex::new(r"(?m)^>\s?").unwrap();
+        text = bq.replace_all(&text, "").to_string();
+
+        super::html::RenderedDesc { text, images }
     }
 }
 

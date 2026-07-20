@@ -212,6 +212,8 @@ impl LeetCode {
                 "    enableRunCode",
                 "    metaData",
                 "    translatedContent",
+                "    translatedTitle",
+                "    title",
                 "  }",
                 "}",
             ]
@@ -267,6 +269,48 @@ impl LeetCode {
             mode: Mode::Get,
             name: "verify_result",
             url,
+        }
+        .send(&self.client)
+        .await
+    }
+
+    /// Fetch a leetcode.cn discuss post by uuid (e.g. RvFUtj from /discuss/post/RvFUtj).
+    pub async fn get_discuss_post(self, uuid: &str) -> Result<Response> {
+        trace!("Requesting discuss post {}...", uuid);
+        let refer = format!("{}/discuss/post/{}", self.conf.sys.urls.base.trim_end_matches('/'), uuid);
+        let mut json: Json = HashMap::new();
+        json.insert(
+            "query",
+            [
+                "query qaQuestionDetail($uuid: ID!) {",
+                "  qaQuestion(uuid: $uuid) {",
+                "    title",
+                "    content",
+                "    uuid",
+                "    slug",
+                "    summary",
+                "    createdAt",
+                "    updatedAt",
+                "    thumbnail",
+                "  }",
+                "}",
+            ]
+            .join("\n"),
+        );
+        json.insert(
+            "variables",
+            format!(r#"{{"uuid":"{}"}}"#, uuid.replace('"', "")),
+        );
+        json.insert("operationName", "qaQuestionDetail".to_string());
+
+        Req {
+            default_headers: self.default_headers,
+            refer: Some(refer),
+            info: false,
+            json: Some(json),
+            mode: Mode::Post,
+            name: "get_discuss_post",
+            url: self.conf.sys.urls.graphql,
         }
         .send(&self.client)
         .await

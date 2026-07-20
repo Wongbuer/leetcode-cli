@@ -96,7 +96,14 @@ impl EditArgs {
                                 .as_bytes(),
                         )?;
                     }
-                    file_code.write_all((d.code.to_string() + "\n").as_bytes())?;
+                    // For Java, nest as `static class Solution` so the outer
+                    // `public class NoX` (from inject) remains the only public type.
+                    // Submit path strips the `static` keyword before upload.
+                    let mut body = d.code.to_string();
+                    if lang == "java" {
+                        body = body.replacen("class Solution", "static class Solution", 1);
+                    }
+                    file_code.write_all((body + "\n").as_bytes())?;
                     if conf.code.edit_code_marker {
                         file_code.write_all(
                             (conf.code.comment_leading.clone()
