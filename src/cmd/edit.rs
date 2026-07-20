@@ -67,6 +67,13 @@ impl EditArgs {
 
             let test_path = crate::helper::test_cases_path(&problem)?;
 
+            // Expand ${fid}/${slug} in inject lines so users can generate
+            // language-specific wrappers like `public class No${fid}`.
+            let expand_inject = |line: &str| -> String {
+                line.replace("${fid}", &problem.fid.to_string())
+                    .replace("${slug}", &problem.slug)
+            };
+
             let mut flag = false;
             for d in question.defs.0 {
                 if d.value == *lang {
@@ -77,7 +84,7 @@ impl EditArgs {
                     }
                     if let Some(inject_before) = &conf.code.inject_before {
                         for line in inject_before {
-                            file_code.write_all((line.to_string() + "\n").as_bytes())?;
+                            file_code.write_all((expand_inject(line) + "\n").as_bytes())?;
                         }
                     }
                     if conf.code.edit_code_marker {
@@ -101,7 +108,7 @@ impl EditArgs {
                     }
                     if let Some(inject_after) = &conf.code.inject_after {
                         for line in inject_after {
-                            file_code.write_all((line.to_string() + "\n").as_bytes())?;
+                            file_code.write_all((expand_inject(line) + "\n").as_bytes())?;
                         }
                     }
 
