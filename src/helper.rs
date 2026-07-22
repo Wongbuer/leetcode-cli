@@ -209,6 +209,8 @@ mod html {
                 .root_element()
                 .text()
                 .fold(String::new(), |acc, e| acc + e);
+            // Problem statements may still embed $...$ / $$...$$ after tag strip.
+            let text = super::image::render_latex_text(&text);
 
             RenderedDesc { text, images }
         }
@@ -666,14 +668,24 @@ mod image {
         out
     }
 
-    /// Render a markdown discuss post: text + image urls (from `![](url)`).
+    /// Render a markdown discuss/solution post: text + image urls (from `![](url)`).
+    ///
+    /// Pipeline:
+    /// 1. protect fenced / inline code (so `*` in Java is never stripped)
+    /// 2. images → `[图片 N]` placeholders
+    /// 3. `$...$` / `$$...$$` → readable Unicode text
+    /// 4. light markdown cleanup on the remaining prose
+    /// 5. restore protected code
     pub fn render_markdown(md: &str) -> super::html::RenderedDesc {
+        // --- 1. protect code so later cleanup can't touch it ---
+        let (md, code_store) = protect_code(md);
+
+        // --- 2. images ---
         let img_re = regex::Regex::new(r#"!\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)"#).unwrap();
         let mut images = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        for cap in img_re.captures_iter(md) {
+        for cap in img_re.captures_iter(&md) {
             let src = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
-            // strip optional leetcode {:width=...} suffix artifacts if any
             let src = src.split('{').next().unwrap_or(src).trim();
             if !src.is_empty() && seen.insert(src.to_string()) {
                 images.push(src.to_string());
@@ -682,7 +694,7 @@ mod image {
 
         let mut idx = 0usize;
         let mut seen2 = std::collections::HashSet::new();
-        let with_ph = img_re.replace_all(md, |cap: &regex::Captures| {
+        let with_ph = img_re.replace_all(&md, |cap: &regex::Captures| {
             let src = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
             let src = src.split('{').next().unwrap_or(src).trim();
             if src.is_empty() || !seen2.insert(src.to_string()) {
@@ -692,9 +704,10 @@ mod image {
             format!("\n[图片 {idx}]\n")
         });
 
-        // Light markdown cleanup for terminal readability.
-        let mut text = with_ph.to_string();
-        // strip {:width=N} artifacts that follow images in leetcode md
+        // --- 3. latex → text (code already protected) ---
+        let mut text = render_latex_text(&with_ph);
+
+        // --- 4. light markdown cleanup ---
         let artifact = regex::Regex::new(r"\{:[^}]*\}").unwrap();
         text = artifact.replace_all(&text, "").to_string();
         // links [text](url) -> text (url)
@@ -704,10 +717,17 @@ mod image {
                 format!("{} ({})", &c[1], &c[2])
             })
             .to_string();
-        // bold/italic markers
-        for pat in ["**", "__", "*", "_", "~~", "`"] {
+        // bold/italic/strike — only outside code (code is placeholder tokens now)
+        // strip multi-char markers first, then single * and _
+        for pat in ["**", "__", "~~"] {
             text = text.replace(pat, "");
         }
+        // single * / _ used as emphasis: remove when they look like wrappers, but
+        // a global wipe is fine here because code is protected and math is done.
+        text = text.replace('*', "");
+        text = text.replace('_', "");
+        // leftover backticks from unpaired inline code
+        text = text.replace('`', "");
         // headings
         let heading = regex::Regex::new(r"(?m)^#{1,6}\s*").unwrap();
         text = heading.replace_all(&text, "").to_string();
@@ -715,7 +735,389 @@ mod image {
         let bq = regex::Regex::new(r"(?m)^>\s?").unwrap();
         text = bq.replace_all(&text, "").to_string();
 
+        // --- 5. restore code ---
+        text = restore_protected(&text, &code_store);
+
         super::html::RenderedDesc { text, images }
+    }
+
+    /// Placeholder prefix unlikely to appear in real content.
+    const CODE_PH: &str = "\u{E000}CODE";
+
+    /// Stash fenced and inline code, replace with opaque placeholders.
+    fn protect_code(md: &str) -> (String, Vec<String>) {
+        let mut store: Vec<String> = Vec::new();
+        let fence = "```";
+        let fence_pat = format!(
+            r"(?m)^{f}[^\n]*\r?\n[\s\S]*?^{f}[ \t]*$",
+            f = regex::escape(fence)
+        );
+        let fence_re = regex::Regex::new(&fence_pat).expect("fence re");
+
+        let mut out = String::new();
+        let mut last = 0usize;
+        for m in fence_re.find_iter(md) {
+            out.push_str(&md[last..m.start()]);
+            let id = store.len();
+            store.push(m.as_str().to_string());
+            out.push_str(&format!("{CODE_PH}{id}\u{E001}"));
+            last = m.end();
+        }
+        out.push_str(&md[last..]);
+
+        // Inline `code` — after fences so fence backticks aren't double-matched.
+        let inline_re = regex::Regex::new(r"`([^`\n]+)`").expect("inline code re");
+        let out2 = inline_re.replace_all(&out, |cap: &regex::Captures| {
+            let id = store.len();
+            // keep surrounding backticks in the restored form for readability
+            store.push(format!("`{}`", &cap[1]));
+            format!("{CODE_PH}{id}\u{E001}")
+        });
+
+        (out2.into_owned(), store)
+    }
+
+    fn restore_protected(text: &str, store: &[String]) -> String {
+        let mut out = text.to_string();
+        // restore in reverse so CODE10 doesn't eat CODE1's prefix
+        for (i, body) in store.iter().enumerate().rev() {
+            let ph = format!("{CODE_PH}{i}\u{E001}");
+            out = out.replace(&ph, body);
+        }
+        out
+    }
+
+    /// Convert `$...$` / `$$...$$` (and a few HTML-ish leftovers) into readable text.
+    pub(super) fn render_latex_text(s: &str) -> String {
+        // Block math first: $$ ... $$ (possibly multiline)
+        let block_re = regex::Regex::new(r"\$\$([\s\S]+?)\$\$").expect("block math");
+        let s = block_re.replace_all(s, |cap: &regex::Captures| {
+            let body = latex_to_text(cap.get(1).map(|m| m.as_str()).unwrap_or(""));
+            format!("\n\n  {}\n\n", body.trim())
+        });
+
+        // Inline math: $...$ (no nested $, single line preferred; allow short multi)
+        // Avoid matching $$ leftovers and empty $$.
+        let inline_re = regex::Regex::new(r"\$([^\$\n]+?)\$").expect("inline math");
+        let s = inline_re.replace_all(&s, |cap: &regex::Captures| {
+            latex_to_text(cap.get(1).map(|m| m.as_str()).unwrap_or(""))
+        });
+
+        // Common HTML entity leftovers that show up after MD→text
+        let mut out = s.into_owned();
+        for (a, b) in [
+            ("&lt;", "<"),
+            ("&gt;", ">"),
+            ("&amp;", "&"),
+            ("&nbsp;", " "),
+            ("&le;", "≤"),
+            ("&ge;", "≥"),
+            ("&ne;", "≠"),
+            ("&times;", "×"),
+            ("&middot;", "·"),
+            ("&infin;", "∞"),
+        ] {
+            out = out.replace(a, b);
+        }
+        out
+    }
+
+    /// Best-effort LaTeX subset → Unicode/plain text for terminal reading.
+    fn latex_to_text(raw: &str) -> String {
+        let mut s = raw.trim().to_string();
+        if s.is_empty() {
+            return s;
+        }
+
+        // Normalize whitespace inside the formula a bit.
+        s = s.replace("\r\n", "\n");
+        // Keep single-line formulas compact; multi-line keep newlines.
+        if !s.contains('\n') {
+            s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        }
+
+        // \begin{...}...\end{...} — flatten to inner with spaces
+        let env_re =
+            regex::Regex::new(r"\\begin\{[^}]*\}([\s\S]*?)\\end\{[^}]*\}").expect("env");
+        s = env_re
+            .replace_all(&s, |c: &regex::Captures| {
+                c.get(1)
+                    .map(|m| m.as_str().replace("\\\\", " ; ").replace('&', " "))
+                    .unwrap_or_default()
+            })
+            .into_owned();
+
+        // \frac{a}{b} / \dfrac / \tfrac → (a)/(b)
+        // Iterate a few times for shallow nesting.
+        let frac_re =
+            regex::Regex::new(r"\\(?:d|t)?frac\{([^{}]+)\}\{([^{}]+)\}").expect("frac");
+        for _ in 0..4 {
+            let next = frac_re
+                .replace_all(&s, |c: &regex::Captures| {
+                    format!("({})/({})", latex_to_text(&c[1]), latex_to_text(&c[2]))
+                })
+                .into_owned();
+            if next == s {
+                break;
+            }
+            s = next;
+        }
+
+        // \sqrt{x} → √(x) ; \sqrt x → √x
+        let sqrt_br = regex::Regex::new(r"\\sqrt\{([^{}]+)\}").expect("sqrt{}");
+        s = sqrt_br
+            .replace_all(&s, |c: &regex::Captures| format!("√({})", latex_to_text(&c[1])))
+            .into_owned();
+        s = s.replace("\\sqrt", "√");
+
+        // \text{...} \textit{...} \mathrm{...} \mathbf{...} \operatorname{...} etc. → inner
+        let style_re = regex::Regex::new(
+            r"\\(?:text|textit|textbf|textrm|mathrm|mathbf|mathsf|mathtt|operatorname\*?|boldsymbol|bm|underline|overline|widehat|widetilde|hat|bar|vec|dot|ddot|tilde|mathcal|mathfrak|mathbb|mathscr)\{([^{}]*)\}",
+        )
+        .expect("style");
+        for _ in 0..6 {
+            let next = style_re
+                .replace_all(&s, |c: &regex::Captures| c[1].to_string())
+                .into_owned();
+            if next == s {
+                break;
+            }
+            s = next;
+        }
+
+        // Naked style commands without braces: \textit x — rare, strip name only later.
+
+        // Superscripts / subscripts: x^{...} x_{...} x^2 x_i
+        let sup_br = regex::Regex::new(r"\^\{([^{}]+)\}").expect("sup{}");
+        s = sup_br
+            .replace_all(&s, |c: &regex::Captures| {
+                let inner = latex_to_text(&c[1]);
+                to_sup_str(&inner)
+            })
+            .into_owned();
+        let sub_br = regex::Regex::new(r"_\{([^{}]+)\}").expect("sub{}");
+        s = sub_br
+            .replace_all(&s, |c: &regex::Captures| {
+                let inner = latex_to_text(&c[1]);
+                to_sub_str(&inner)
+            })
+            .into_owned();
+        // single-token ^2 _i
+        let sup_one = regex::Regex::new(r"\^([A-Za-z0-9+\-])").expect("sup1");
+        s = sup_one
+            .replace_all(&s, |c: &regex::Captures| to_sup_str(&c[1]))
+            .into_owned();
+        let sub_one = regex::Regex::new(r"_([A-Za-z0-9+\-])").expect("sub1");
+        s = sub_one
+            .replace_all(&s, |c: &regex::Captures| to_sub_str(&c[1]))
+            .into_owned();
+
+        // Named symbols / operators (order: longer first where needed)
+        let reps: &[(&str, &str)] = &[
+            ("\\leqslant", "≤"),
+            ("\\geqslant", "≥"),
+            ("\\leq", "≤"),
+            ("\\geq", "≥"),
+            ("\\le", "≤"),
+            ("\\ge", "≥"),
+            ("\\neq", "≠"),
+            ("\\ne", "≠"),
+            ("\\approx", "≈"),
+            ("\\equiv", "≡"),
+            ("\\sim", "∼"),
+            ("\\simeq", "≃"),
+            ("\\propto", "∝"),
+            ("\\pm", "±"),
+            ("\\mp", "∓"),
+            ("\\times", "×"),
+            ("\\cdot", "·"),
+            ("\\ast", "*"),
+            ("\\star", "⋆"),
+            ("\\div", "÷"),
+            ("\\infty", "∞"),
+            ("\\partial", "∂"),
+            ("\\nabla", "∇"),
+            ("\\forall", "∀"),
+            ("\\exists", "∃"),
+            ("\\emptyset", "∅"),
+            ("\\varnothing", "∅"),
+            ("\\in", "∈"),
+            ("\\notin", "∉"),
+            ("\\subset", "⊂"),
+            ("\\subseteq", "⊆"),
+            ("\\supset", "⊃"),
+            ("\\supseteq", "⊇"),
+            ("\\cup", "∪"),
+            ("\\cap", "∩"),
+            ("\\wedge", "∧"),
+            ("\\vee", "∨"),
+            ("\\neg", "¬"),
+            ("\\land", "∧"),
+            ("\\lor", "∨"),
+            ("\\lnot", "¬"),
+            ("\\rightarrow", "→"),
+            ("\\leftarrow", "←"),
+            ("\\leftrightarrow", "↔"),
+            ("\\Rightarrow", "⇒"),
+            ("\\Leftarrow", "⇐"),
+            ("\\Leftrightarrow", "⇔"),
+            ("\\to", "→"),
+            ("\\mapsto", "↦"),
+            ("\\uparrow", "↑"),
+            ("\\downarrow", "↓"),
+            ("\\langle", "⟨"),
+            ("\\rangle", "⟩"),
+            ("\\lfloor", "⌊"),
+            ("\\rfloor", "⌋"),
+            ("\\lceil", "⌈"),
+            ("\\rceil", "⌉"),
+            ("\\ldots", "…"),
+            ("\\cdots", "⋯"),
+            ("\\dots", "…"),
+            ("\\quad", " "),
+            ("\\qquad", "  "),
+            ("\\,", " "),
+            ("\\;", " "),
+            ("\\!", ""),
+            ("\\ ", " "),
+            // Greek
+            ("\\alpha", "α"),
+            ("\\beta", "β"),
+            ("\\gamma", "γ"),
+            ("\\delta", "δ"),
+            ("\\epsilon", "ε"),
+            ("\\varepsilon", "ε"),
+            ("\\zeta", "ζ"),
+            ("\\eta", "η"),
+            ("\\theta", "θ"),
+            ("\\iota", "ι"),
+            ("\\kappa", "κ"),
+            ("\\lambda", "λ"),
+            ("\\mu", "μ"),
+            ("\\nu", "ν"),
+            ("\\xi", "ξ"),
+            ("\\pi", "π"),
+            ("\\rho", "ρ"),
+            ("\\sigma", "σ"),
+            ("\\tau", "τ"),
+            ("\\upsilon", "υ"),
+            ("\\phi", "φ"),
+            ("\\varphi", "φ"),
+            ("\\chi", "χ"),
+            ("\\psi", "ψ"),
+            ("\\omega", "ω"),
+            ("\\Gamma", "Γ"),
+            ("\\Delta", "Δ"),
+            ("\\Theta", "Θ"),
+            ("\\Lambda", "Λ"),
+            ("\\Xi", "Ξ"),
+            ("\\Pi", "Π"),
+            ("\\Sigma", "Σ"),
+            ("\\Phi", "Φ"),
+            ("\\Psi", "Ψ"),
+            ("\\Omega", "Ω"),
+            // functions kept as words; leading space avoids `n\log` → `nlog`
+            ("\\log", " log"),
+            ("\\ln", " ln"),
+            ("\\lg", " lg"),
+            ("\\exp", " exp"),
+            ("\\min", " min"),
+            ("\\max", " max"),
+            ("\\arg", " arg"),
+            ("\\sin", " sin"),
+            ("\\cos", " cos"),
+            ("\\tan", " tan"),
+            ("\\cot", " cot"),
+            ("\\sec", " sec"),
+            ("\\csc", " csc"),
+            ("\\arcsin", " arcsin"),
+            ("\\arccos", " arccos"),
+            ("\\arctan", " arctan"),
+            ("\\sinh", " sinh"),
+            ("\\cosh", " cosh"),
+            ("\\tanh", " tanh"),
+            ("\\det", " det"),
+            ("\\dim", " dim"),
+            ("\\ker", " ker"),
+            ("\\deg", " deg"),
+            ("\\gcd", " gcd"),
+            ("\\lcm", " lcm"),
+            ("\\Pr", " Pr"),
+            ("\\sum", "∑"),
+            ("\\prod", "∏"),
+            ("\\int", "∫"),
+            ("\\lim", " lim"),
+            ("\\sup", " sup"),
+            ("\\inf", " inf"),
+            // script letters commonly used for complexity
+            ("\\mathcal{O}", "O"),
+            ("\\O", "O"),
+        ];
+        for (a, b) in reps {
+            s = s.replace(a, b);
+        }
+
+        // leftover \command{arg} → arg (generic, after known ones)
+        let cmd_br = regex::Regex::new(r"\\[A-Za-z]+\*?\{([^{}]*)\}").expect("cmd{}");
+        for _ in 0..4 {
+            let next = cmd_br
+                .replace_all(&s, |c: &regex::Captures| c[1].to_string())
+                .into_owned();
+            if next == s {
+                break;
+            }
+            s = next;
+        }
+
+        // leftover \command → drop name
+        let cmd = regex::Regex::new(r"\\[A-Za-z]+\*?").expect("cmd");
+        s = cmd.replace_all(&s, "").into_owned();
+
+        // braces used only for grouping
+        s = s.replace('{', "").replace('}', "");
+
+        // spacing cleanup: collapse runs, pad common binary operators once
+        let sp = regex::Regex::new(r"[ \t]{2,}").expect("sp");
+        s = sp.replace_all(&s, " ").into_owned();
+        for op in ["·", "×", "÷", "±", "≤", "≥", "≠", "≈", "∈", "→", "⇒"] {
+            let re = regex::Regex::new(&format!(r" *{} *", regex::escape(op))).expect("op sp");
+            s = re
+                .replace_all(&s, format!(" {op} ").as_str())
+                .into_owned();
+        }
+        s = sp.replace_all(&s, " ").into_owned();
+        s.trim().to_string()
+    }
+
+    fn to_sup_str(s: &str) -> String {
+        let t = s.trim();
+        if !t.is_empty() && t.chars().all(|c| c.is_ascii_digit()) {
+            t.bytes()
+                .map(|b| crate::helper::superscript(b - b'0'))
+                .collect::<String>()
+        } else if t.len() == 1 {
+            match t {
+                "+" => "⁺".into(),
+                "-" => "⁻".into(),
+                "n" => "ⁿ".into(),
+                "i" => "ⁱ".into(),
+                _ => format!("^{t}"),
+            }
+        } else {
+            format!("^{t}")
+        }
+    }
+
+    fn to_sub_str(s: &str) -> String {
+        let t = s.trim();
+        if !t.is_empty() && t.chars().all(|c| c.is_ascii_digit()) {
+            t.bytes()
+                .map(|b| crate::helper::subscript(b - b'0'))
+                .collect::<String>()
+        } else {
+            // multi-char subscripts (left, mx, ...) keep as _name for readability
+            format!("_{t}")
+        }
     }
 }
 
