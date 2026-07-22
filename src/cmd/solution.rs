@@ -326,9 +326,6 @@ async fn show_solution(slug: &str, prefer_lang: Option<String>) -> Result<()> {
         slug.dimmed()
     );
 
-    let rendered = crate::helper::render_markdown(&content);
-    crate::helper::print_desc_with_images(&rendered.text, &rendered.images);
-
     let base = crate::config::Config::locate()
         .map(|c| c.sys.urls.base)
         .unwrap_or_else(|_| "https://leetcode.cn".into());
@@ -340,6 +337,32 @@ async fn show_solution(slug: &str, prefer_lang: Option<String>) -> Result<()> {
     } else {
         format!("{base}/")
     };
+
+    // Some community posts are published with empty markdown body
+    // (only a code playground / "Problem: Code" stub). Surface that clearly.
+    if content.trim().is_empty() {
+        let summary = art
+            .get("summary")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        println!(
+            "{}",
+            "(题解正文为空 — 作者可能只贴了代码块/未写文字，接口 content 字段为空)"
+                .yellow()
+        );
+        if !summary.is_empty() && summary != "Problem: Code" {
+            println!("{} {}", "摘要:".dimmed(), summary);
+        }
+        println!(
+            "{} 可在浏览器打开查看，或换一篇题解",
+            "hint:".dimmed()
+        );
+    } else {
+        let rendered = crate::helper::render_markdown(&content);
+        crate::helper::print_desc_with_images(&rendered.text, &rendered.images);
+    }
+
     println!("\n{} {}", "链接:".dimmed(), link);
 
     Ok(())
